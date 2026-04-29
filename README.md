@@ -68,45 +68,77 @@ To regenerate this section after running new experiments::
 | CLIP ViT-B/32  (frozen, linear probe, Adam) | 3.85 | — |
 | CLIP ViT-B/32  (full fine-tune from frozen) | 3.47 | — |
 | CLIP ViT-L/14  (frozen, linear probe, Adam) | 3.78 | — |
+|        |                                |       |
+| CLIP ViT-B/32  (zero-shot, no training) | 7.24 | — |
+| CLIP ViT-L/14  (zero-shot, no training) | 9.48 | — |
 
 ### Two-class weather classification (5-fold normalised accuracy)
 
-| Method | This repo (norm. acc., ↑) | Paper |
-|--------|--------------------------:|------:|
+| Method | This repo (norm. acc. % mean ± std, ↑) | Paper |
+|--------|--------------------------------------:|------:|
 | Lu et al. (2014) — paper | — | 53.1 ± 2.2 |
 | CloudyNet-I (AlexNet, ImageNet) — paper | — | 85.7 ± 0.5 |
 | CloudyNet-P (AlexNet, Places365) — paper | — | 86.1 ± 0.6 |
 | CloudyNet-H (AlexNet, Hybrid) — paper | — | 87.1 ± 0.3 |
+|        |                                |       |
+| AlexNet-I  (ImageNet, SGD) | 85.9 ± 0.8 | — |
+| AlexNet-P  (Places365, SGD) | 86.6 ± 0.9 | — |
+| ResNet-50  (ImageNet, Adam) | 90.9 ± 1.1 | — |
+| ResNet-50  (Places365, Adam) | 89.8 ± 1.3 | — |
+| CLIP ViT-B/32  (frozen, linear probe, Adam) | 84.0 ± 0.5 | — |
+|        |                                |       |
+| CLIP ViT-B/32  (zero-shot, no training) | 56.4 ± 0.9 | — |
+| CLIP ViT-L/14  (zero-shot, no training) | 42.3 ± 1.2 | — |
 
 <!-- RESULTS:END -->
 
-**Reading the table.**  All "this repo" numbers come from a single training
-run on the official 81/20 webcam holdout — no ensembling, no test-time
-augmentation, no per-attribute hyper-tuning.  A few observations:
+**Reading the table.**  Numbers come from a single training run per
+configuration on the official splits (81/20 webcam holdout for transient
+attributes, 5-fold sunny/cloudy for weather) — no ensembling, no
+test-time augmentation, no per-attribute hyper-tuning.
 
-- **AlexNet (-I/-P) trails the paper by ~0.3 absolute.** The original WACV
-  models were trained in Caffe with a slightly different AlexNet topology
-  (grouped convolutions in conv2/4/5) and Caffe-style preprocessing
-  (BGR + per-channel mean subtraction). Torchvision's modern AlexNet uses
-  the same overall architecture but without the original group convs, so a
-  small reproduction gap is expected. The paper's *relative* trend
-  Hybrid > Places365 > ImageNet still holds.
+*TransientNet*
+
+- **AlexNet (-I/-P) trails the paper by ~0.3 absolute.** The original
+  WACV models were trained in Caffe with a slightly different AlexNet
+  topology (grouped convolutions in conv2/4/5) and Caffe-style
+  preprocessing (BGR + per-channel mean subtraction). Torchvision's
+  modern AlexNet uses the same overall architecture but without the
+  original group convs, so a small reproduction gap is expected. The
+  paper's *relative* trend Hybrid > Places365 > ImageNet still holds.
 - **Modern backbones beat the paper's best (3.83) once we switch the
-  optimiser from SGD to Adam.** With sigmoid+MSE on a relatively low-
-  dimensional head (512–768), plain SGD spends most of its time in the
-  saturated regime; Adam (or AdamW) recovers cleanly. The training script
-  exposes this via `--optimizer adam --scheduler cosine`. Plain SGD remains
-  the default to match the paper.
+  optimiser from SGD to Adam.** With sigmoid+MSE on a relatively
+  low-dimensional head (512–768), plain SGD spends most of its time
+  in the saturated regime; Adam (or AdamW) recovers cleanly. Plain
+  SGD remains the default in the training script to match the paper.
 - **CLIP ViT-B/32, frozen + linear probe with Adam, already matches
   TransientNet-H** in well under a minute of head-only training on a
   single 4090.
 - **CLIP ViT-B/32 with a 10-epoch full fine-tune from the linear-probe
   checkpoint reaches 3.47 % — the new best on this benchmark.**
-- The **two-class weather** rows are pending: the dataset is hosted on a
-  Google Drive link from Lu et al.'s project page that was not fetched
-  during this run.  Downloading it locally and rerunning
-  `scripts/run_all_cloudynet.sh` will fill those rows in (the dataset
-  loader and 5-fold split are wired up).
+
+*CloudyNet (5-fold)*
+
+- **AlexNet-I/-P reproduce the paper almost exactly** (85.9 vs 85.7
+  for ImageNet init, 86.6 vs 86.1 for Places365 init). The paper's
+  CloudyNet-H Hybrid checkpoint isn't redistributed in PyTorch form,
+  so we don't reproduce that row directly — but Places365 already
+  matches its 87.1 within noise.
+- **ResNet-50 with Adam clears 90 %** on both initialisations
+  (90.9 ± 1.1, 89.8 ± 1.3) — comfortably above the paper.
+- **CLIP ViT-B/32 frozen linear probe (84.0 ± 0.5)** is slightly
+  *below* the trained AlexNet baselines on this dataset, which is the
+  opposite of the transient-attributes story. Sunny vs cloudy at the
+  Lu et al. dataset's level of difficulty is a domain-specific
+  decision boundary that benefits from end-to-end training more than
+  CLIP's pre-trained features can offer.
+- **Zero-shot CLIP** (no training, just text prompts vs image
+  embeddings) gives 56 % normalised accuracy with B/32 and 42 % with
+  L/14 — both well below the trained models. Counter-intuitively L/14
+  is *worse* zero-shot, suggesting the pre-trained alignment between
+  the words "sunny"/"cloudy" and the kinds of images in Lu et al.'s
+  dataset is sharper but more brittle in the larger model. Zero-shot
+  is a reasonable lower bound but not a substitute for training here.
 
 ---
 
