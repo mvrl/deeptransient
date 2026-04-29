@@ -58,7 +58,7 @@ from deeptransient.models import CloudyNet, TransientNet, get_transform
 # ---------------------------------------------------------------------------
 
 
-def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train TransientNet or CloudyNet",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -95,7 +95,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
 
     # ---- data -----------------------------------------------------------
-    parser.add_argument("--data-root", type=str, required=True, metavar="PATH")
+    # NOTE: not marked required at the parser level — we validate after
+    # YAML config merging so --data-root may live in the config file.
+    parser.add_argument("--data-root", type=str, default=None, metavar="PATH")
     parser.add_argument(
         "--fold",
         type=int,
@@ -107,8 +109,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--image-dir",
         type=str,
-        default="imageLD",
-        help="Image sub-directory name (transient_attrs only).",
+        default="imageAlignedLD",
+        help=(
+            "Image sub-directory name (transient_attrs only). "
+            "Defaults to Brown's distribution layout; the loader auto-falls "
+            "back to imageLD if imageAlignedLD is absent."
+        ),
     )
 
     # ---- optimisation ---------------------------------------------------
@@ -133,6 +139,22 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Use automatic mixed precision (requires CUDA).",
     )
+    parser.add_argument(
+        "--optimizer",
+        choices=["sgd", "adam", "adamw"],
+        default="sgd",
+        help=(
+            "SGD with momentum=0.9 (paper default), Adam, or AdamW. "
+            "Adam is recommended for frozen-backbone linear probes where "
+            "sigmoid-saturation makes plain SGD slow to converge."
+        ),
+    )
+    parser.add_argument(
+        "--scheduler",
+        choices=["step", "cosine", "none"],
+        default="step",
+        help="Learning-rate schedule.",
+    )
 
     # ---- misc -----------------------------------------------------------
     parser.add_argument(
@@ -143,7 +165,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--output-dir", type=str, default="runs/default", metavar="PATH"
     )
     parser.add_argument(
-        "--resume", type=str, default=None, metavar="CKPT", help="Resume from checkpoint."
+        "--resume", type=str, default=None, metavar="CKPT",
+        help="Resume training from checkpoint (loads model + optimizer + scheduler).",
+    )
+    parser.add_argument(
+        "--init-from", type=str, default=None, metavar="CKPT",
+        help=(
+            "Initialise model weights from a checkpoint but start a fresh "
+            "optimizer/scheduler.  Use this to fine-tune from a frozen-backbone "
+            "linear-probe run with a new learning-rate schedule."
+        ),
     )
     parser.add_argument(
         "--push-to-hub",
@@ -166,17 +197,29 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "fine-tuning experiment."
         ),
     )
+    return parser
 
+
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    parser = _build_parser()
     args = parser.parse_args(argv)
 
-    # Merge YAML config (CLI flags take priority)
     if args.config is not None:
-        args = _merge_yaml_config(args)
+        args = _merge_yaml_config(parser, args, argv)
 
+    if args.data_root is None:
+        parser.error(
+            "--data-root is required (pass on the command line or set "
+            "data-root in the YAML config)."
+        )
     return args
 
 
-def _merge_yaml_config(args: argparse.Namespace) -> argparse.Namespace:
+def _merge_yaml_config(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    argv: Optional[list[str]],
+) -> argparse.Namespace:
     """Load a YAML config and let CLI flags override its values."""
     try:
         import yaml
@@ -186,11 +229,21 @@ def _merge_yaml_config(args: argparse.Namespace) -> argparse.Namespace:
     with open(args.config) as f:
         cfg = yaml.safe_load(f) or {}
 
-    # Only set values that were not explicitly supplied on the CLI
-    defaults = vars(parse_args([]))  # parser defaults
+    # Identify which dests were explicitly supplied on the CLI by
+    # parsing the same argv against a parser with all defaults set
+    # to a sentinel — anything not equal to the sentinel was set by
+    # the user (or is the no-arg default for action="store_true").
+    sentinel = object()
+    sentinel_parser = _build_parser()
+    for action in sentinel_parser._actions:
+        if action.dest != "help":
+            action.default = sentinel
+    cli_ns = sentinel_parser.parse_args(argv if argv is not None else None)
     cli_overrides = {
-        k for k, v in vars(args).items() if v != defaults.get(k) and k != "config"
+        dest for dest, val in vars(cli_ns).items()
+        if val is not sentinel and dest != "config"
     }
+
     for key, value in cfg.items():
         dest = key.replace("-", "_")
         if dest not in cli_overrides:
@@ -423,15 +476,29 @@ def main() -> None:
     # Optimiser & scheduler
     # ------------------------------------------------------------------
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.SGD(
-        trainable_params,
-        lr=args.lr,
-        momentum=0.9,
-        weight_decay=args.weight_decay,
-    )
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma
-    )
+    if args.optimizer == "sgd":
+        optimizer = torch.optim.SGD(
+            trainable_params, lr=args.lr, momentum=0.9, weight_decay=args.weight_decay,
+        )
+    elif args.optimizer == "adam":
+        optimizer = torch.optim.Adam(
+            trainable_params, lr=args.lr, weight_decay=args.weight_decay,
+        )
+    else:  # adamw
+        optimizer = torch.optim.AdamW(
+            trainable_params, lr=args.lr, weight_decay=args.weight_decay,
+        )
+
+    if args.scheduler == "step":
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma
+        )
+    elif args.scheduler == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=args.epochs
+        )
+    else:  # "none"
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
 
     scaler = (
         torch.amp.GradScaler() if args.amp and device.type == "cuda" else None
@@ -449,6 +516,9 @@ def main() -> None:
             args.resume, model, optimizer, scheduler
         )
         print(f"Resumed from {args.resume} (epoch {start_epoch})")
+    elif args.init_from is not None:
+        load_checkpoint(args.init_from, model)
+        print(f"Initialised model weights from {args.init_from}")
 
     # ------------------------------------------------------------------
     # Training loop

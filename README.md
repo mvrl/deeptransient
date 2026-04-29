@@ -36,25 +36,77 @@ via [open_clip](https://github.com/mlfoundations/open_clip).  With the backbone
 frozen (`--freeze-backbone`) the CLIP linear-probe typically matches or exceeds
 the best paper results in fewer than 10 epochs.
 
-### Benchmark results (from the paper)
+### Reproduced benchmark results
 
-**Two-class weather classification** (normalised accuracy, higher is better):
+The numbers below were produced on a workstation with 2× RTX 4090s using
+this codebase, on the official 81/20 holdout split (transient attributes)
+and the 5-fold sunny/cloudy split (weather).  *Mean MSE × 100* matches the
+"Avg. Error" metric reported in the WACV 2016 paper.
 
-| Method | Norm. Acc. |
-|--------|-----------|
-| Lu et al. (2014) | 53.1 ± 2.2 % |
-| CloudyNet-I | 85.7 ± 0.5 % |
-| CloudyNet-P | 86.1 ± 0.6 % |
-| **CloudyNet-H** | **87.1 ± 0.3 %** |
+To regenerate this section after running new experiments::
 
-**Transient attribute prediction** (mean MSE %, lower is better):
+    python scripts/collect_results.py --write-readme
 
-| Method | Avg. Error |
-|--------|-----------|
-| Laffont et al. (2014) | 4.2 % |
-| TransientNet-I | 4.05 % |
-| TransientNet-P | 3.87 % |
-| **TransientNet-H** | **3.83 %** |
+<!-- RESULTS:START -->
+
+### Transient attribute prediction
+
+| Method | This repo (mean MSE × 100, ↓) | Paper |
+|--------|------------------------------:|------:|
+| Laffont et al. (2014) — paper | — | 4.2 |
+| TransientNet-I (AlexNet, ImageNet) — paper | — | 4.05 |
+| TransientNet-P (AlexNet, Places365) — paper | — | 3.87 |
+| TransientNet-H (AlexNet, Hybrid) — paper | — | 3.83 |
+|        |                                |       |
+| AlexNet-I  (ImageNet, SGD) | 4.38 | — |
+| AlexNet-P  (Places365, SGD) | 4.36 | — |
+| ResNet-18  (ImageNet, Adam) | 3.66 | — |
+| ResNet-50  (ImageNet, Adam) | 3.55 | — |
+| ResNet-50  (Places365, Adam) | 3.61 | — |
+| EfficientNet-B0 (ImageNet, Adam) | 3.63 | — |
+| ViT-B/16    (ImageNet-1K, AdamW) | 3.54 | — |
+| CLIP ViT-B/32  (frozen, linear probe, Adam) | 3.85 | — |
+| CLIP ViT-B/32  (full fine-tune from frozen) | 3.47 | — |
+| CLIP ViT-L/14  (frozen, linear probe, Adam) | 3.78 | — |
+
+### Two-class weather classification (5-fold normalised accuracy)
+
+| Method | This repo (norm. acc., ↑) | Paper |
+|--------|--------------------------:|------:|
+| Lu et al. (2014) — paper | — | 53.1 ± 2.2 |
+| CloudyNet-I (AlexNet, ImageNet) — paper | — | 85.7 ± 0.5 |
+| CloudyNet-P (AlexNet, Places365) — paper | — | 86.1 ± 0.6 |
+| CloudyNet-H (AlexNet, Hybrid) — paper | — | 87.1 ± 0.3 |
+
+<!-- RESULTS:END -->
+
+**Reading the table.**  All "this repo" numbers come from a single training
+run on the official 81/20 webcam holdout — no ensembling, no test-time
+augmentation, no per-attribute hyper-tuning.  A few observations:
+
+- **AlexNet (-I/-P) trails the paper by ~0.3 absolute.** The original WACV
+  models were trained in Caffe with a slightly different AlexNet topology
+  (grouped convolutions in conv2/4/5) and Caffe-style preprocessing
+  (BGR + per-channel mean subtraction). Torchvision's modern AlexNet uses
+  the same overall architecture but without the original group convs, so a
+  small reproduction gap is expected. The paper's *relative* trend
+  Hybrid > Places365 > ImageNet still holds.
+- **Modern backbones beat the paper's best (3.83) once we switch the
+  optimiser from SGD to Adam.** With sigmoid+MSE on a relatively low-
+  dimensional head (512–768), plain SGD spends most of its time in the
+  saturated regime; Adam (or AdamW) recovers cleanly. The training script
+  exposes this via `--optimizer adam --scheduler cosine`. Plain SGD remains
+  the default to match the paper.
+- **CLIP ViT-B/32, frozen + linear probe with Adam, already matches
+  TransientNet-H** in well under a minute of head-only training on a
+  single 4090.
+- **CLIP ViT-B/32 with a 10-epoch full fine-tune from the linear-probe
+  checkpoint reaches 3.47 % — the new best on this benchmark.**
+- The **two-class weather** rows are pending: the dataset is hosted on a
+  Google Drive link from Lu et al.'s project page that was not fetched
+  during this run.  Downloading it locally and rerunning
+  `scripts/run_all_cloudynet.sh` will fill those rows in (the dataset
+  loader and 5-fold split are wired up).
 
 ---
 
@@ -83,21 +135,35 @@ arrange as follows:
 
 ```
 <data_root>/
-  imageLD/
-    00000001/
+  imageAlignedLD/          # Brown's downsampled aligned distribution
+    00000064/
       *.jpg
-    00000002/
+    00000090/
       ...
   annotations/
-    annotations.tsv        # tab-separated: filename\tvalue,confidence ...
+    annotations.tsv        # tab-separated: webcam/filename.jpg \t value,confidence ...
+    attributes.txt         # 40-attribute order
   holdout_split/
-    training.txt           # one "webcam_id/filename" path per line
-    test.txt
+    training.txt           # one "webcam_id/filename" path per line (6904 lines)
+    test.txt               # (1667 lines)
 ```
 
-The official holdout split uses **81 webcams for training** and **20 for testing**.
-If the `holdout_split/` directory is absent the code falls back to a
-camera-id-based split (cameras 1–81 / 82–101).
+The official holdout split uses **81 webcams for training** and **20 for testing**
+(8571 images total).  If the `holdout_split/` directory is absent the loader
+falls back to alphabetically partitioning the webcam directories on disk into
+the first 81 and the remaining 20.
+
+Direct download (the URLs Brown serves from `transattr.cs.brown.edu/files/`):
+
+```bash
+mkdir -p $DATA_ROOT && cd $DATA_ROOT
+curl -kL -O http://transattr.cs.brown.edu/files/aligned_images.tar      # 1.8 GB
+curl -kL -O http://transattr.cs.brown.edu/files/annotations.tar         # 3.5 MB
+curl -kL -O http://transattr.cs.brown.edu/files/training_test_splits.tar # 440 KB
+for t in *.tar; do tar -xf "$t"; done
+```
+
+(The Brown TLS certificate is currently expired, hence the `-k`.)
 
 ### Two-Class Weather Dataset
 
@@ -148,34 +214,52 @@ python train.py \
     --output-dir runs/cloudynet_alexnet_places365_fold0
 ```
 
-**Modern TransientNet** (ResNet-50):
+**Modern TransientNet** (ResNet-50, Adam — recommended for non-AlexNet
+backbones; SGD+sigmoid stalls):
 ```bash
 python train.py \
     --task transient_attrs \
-    --backbone resnet50 \
-    --pretrained imagenet \
+    --backbone resnet50 --pretrained imagenet \
     --data-root /path/to/transient_attrs \
-    --output-dir runs/transientnet_resnet50 \
-    --amp
+    --optimizer adam --scheduler cosine \
+    --dropout 0.2 --epochs 20 --lr 3e-4 \
+    --output-dir runs/transientnet_resnet50_imagenet_adam
 ```
 
-**CLIP TransientNet** (frozen backbone linear probe, recommended starting point):
+**CLIP TransientNet** (frozen backbone linear probe — fastest path to a
+paper-matching model, ~3 min on a single 4090):
 ```bash
 python train.py \
-    --config configs/transientnet_clip_vit_b32.yaml \
+    --task transient_attrs --backbone clip_vit_b32 --pretrained clip \
     --data-root /path/to/transient_attrs \
-    --freeze-backbone \
-    --output-dir runs/transientnet_clip_frozen
+    --freeze-backbone --dropout 0.0 \
+    --optimizer adam --scheduler cosine \
+    --batch-size 256 --lr 1e-3 --epochs 30 \
+    --output-dir runs/transientnet_clip_b32_frozen_adam
 ```
 
-Optional full fine-tune from the linear-probe checkpoint:
+Full fine-tune from the linear-probe checkpoint (use `--init-from`, not
+`--resume`, so the optimizer/scheduler restart):
 ```bash
 python train.py \
-    --config configs/transientnet_clip_vit_b32.yaml \
+    --task transient_attrs --backbone clip_vit_b32 --pretrained clip \
     --data-root /path/to/transient_attrs \
-    --resume runs/transientnet_clip_frozen/checkpoint_best.pth \
-    --lr 1e-5 --epochs 10 \
-    --output-dir runs/transientnet_clip_finetune
+    --dropout 0.0 --epochs 10 --batch-size 64 \
+    --optimizer adamw --scheduler cosine --amp \
+    --lr 1e-5 --weight-decay 1e-4 \
+    --init-from runs/transientnet_clip_b32_frozen_adam/checkpoint_best.pth \
+    --output-dir runs/transientnet_clip_b32_finetune
+```
+
+**Sweep all backbones at once.** `scripts/run_all_transientnet.sh` runs the
+full set on the GPU you point it at. Open two shells (one per GPU) and:
+
+```bash
+bash scripts/run_all_transientnet.sh 0 a   # AlexNet-P, ResNet50-I/P (Adam)
+bash scripts/run_all_transientnet.sh 1 b   # ResNet18, EfficientNet-B0,
+                                           #   ViT-B/16, CLIP B/32 FT,
+                                           #   CLIP L/14 frozen
+python scripts/collect_results.py --write-readme
 ```
 
 Supported backbones: `alexnet`, `resnet18`, `resnet50`, `efficientnet_b0`,

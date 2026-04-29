@@ -7,7 +7,7 @@ pretrained: imagenet    # change to 'places365' for -P or -H init
 dropout: 0.5
 
 # Data
-image_dir: imageLD
+image_dir: imageAlignedLD
 
 # Optimisation
 epochs: 50

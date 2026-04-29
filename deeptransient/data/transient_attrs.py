@@ -79,9 +79,9 @@ class TransientAttributesDataset(Dataset):
         split: ``"train"`` or ``"test"``.
         transform: Optional image transform.  A sensible default is applied
             when ``None`` is given.
-        image_dir: Name of the sub-directory containing images.
-            Defaults to ``"imageLD"``; use ``"imageAlignedLD"`` for the
-            larger-resolution variant of the dataset.
+        image_dir: Name of the sub-directory containing images.  Defaults to
+            ``"imageAlignedLD"`` (Brown's downsampled aligned distribution).
+            Falls back to ``"imageLD"`` if that directory does not exist.
     """
 
     def __init__(
@@ -89,7 +89,7 @@ class TransientAttributesDataset(Dataset):
         root: str | Path,
         split: str = "train",
         transform: Optional[Callable] = None,
-        image_dir: str = "imageLD",
+        image_dir: str = "imageAlignedLD",
     ) -> None:
         if split not in ("train", "test"):
             raise ValueError(f"split must be 'train' or 'test', got {split!r}")
@@ -97,6 +97,13 @@ class TransientAttributesDataset(Dataset):
         self.root = Path(root)
         self.split = split
         self.transform = transform if transform is not None else _default_transform(split)
+        # Auto-fallback so callers don't need to know which name Brown's
+        # archive used: imageAlignedLD (default) or the older imageLD.
+        if not (self.root / image_dir).is_dir():
+            for candidate in ("imageAlignedLD", "imageLD"):
+                if (self.root / candidate).is_dir():
+                    image_dir = candidate
+                    break
         self.image_dir = image_dir
 
         self._annotations = self._load_annotations()
@@ -107,7 +114,12 @@ class TransientAttributesDataset(Dataset):
     # ------------------------------------------------------------------
 
     def _load_annotations(self) -> dict[str, list[float]]:
-        """Return a dict mapping bare filename → list of 40 attribute values."""
+        """Return a dict mapping ``"<webcam_id>/<filename>"`` → 40 attribute values.
+
+        Brown's distribution keys each row by ``<webcam_id>/<filename>.jpg``
+        (e.g. ``00000064/1.jpg``).  We also store a bare-filename fallback for
+        compatibility with older redistributions that strip the webcam prefix.
+        """
         ann_path = self.root / "annotations" / "annotations.tsv"
         if not ann_path.exists():
             raise FileNotFoundError(
@@ -121,10 +133,12 @@ class TransientAttributesDataset(Dataset):
             for row in reader:
                 if not row:
                     continue
-                filename = row[0].strip()
+                key = row[0].strip()
                 # Each attribute column is "value,confidence"; we use the value.
                 attrs = [float(col.split(",")[0]) for col in row[1:] if col.strip()]
-                annotations[filename] = attrs
+                annotations[key] = attrs
+                bare = os.path.basename(key)
+                annotations.setdefault(bare, attrs)
         return annotations
 
     def _build_samples(self) -> list[tuple[Path, list[float]]]:
@@ -155,26 +169,43 @@ class TransientAttributesDataset(Dataset):
                 rel_path = line.strip()
                 if not rel_path:
                     continue
-                bare_name = os.path.basename(rel_path)
-                if bare_name not in self._annotations:
+                # Annotations are keyed by "<webcam_id>/<filename>"; fall back
+                # to bare filename for backwards compatibility with old dumps.
+                attrs = self._annotations.get(rel_path) or self._annotations.get(
+                    os.path.basename(rel_path)
+                )
+                if attrs is None:
                     continue
                 img_path = self.root / self.image_dir / rel_path
-                samples.append((img_path, self._annotations[bare_name]))
+                samples.append((img_path, attrs))
         return samples
 
     def _samples_from_camera_split(self) -> list[tuple[Path, list[float]]]:
-        """Fall back to camera-id-based split when holdout files are absent."""
-        camera_ids = TRAIN_CAMERAS if self.split == "train" else TEST_CAMERAS
+        """Fall back to camera-id-based split when holdout files are absent.
+
+        The official split partitions the 101 webcams 81/20.  Because the
+        webcam directories are not numbered contiguously (IDs include values
+        such as ``00000064`` and ``90000011``), we sort the directories that
+        actually exist on disk and take the first 81 for training and the
+        remaining 20 for testing.
+        """
         img_root = self.root / self.image_dir
+        if not img_root.is_dir():
+            return []
+        cam_dirs = sorted(d for d in img_root.iterdir() if d.is_dir())
+        train_dirs = cam_dirs[:81]
+        test_dirs = cam_dirs[81:101]
+        target_dirs = train_dirs if self.split == "train" else test_dirs
+
         samples = []
-        for cam_id in camera_ids:
-            cam_dir = img_root / f"{cam_id:08d}"
-            if not cam_dir.is_dir():
-                continue
+        for cam_dir in target_dirs:
             for img_path in sorted(cam_dir.iterdir()):
-                bare_name = img_path.name
-                if bare_name in self._annotations:
-                    samples.append((img_path, self._annotations[bare_name]))
+                key = f"{cam_dir.name}/{img_path.name}"
+                attrs = self._annotations.get(key) or self._annotations.get(
+                    img_path.name
+                )
+                if attrs is not None:
+                    samples.append((img_path, attrs))
         return samples
 
     # ------------------------------------------------------------------

@@ -44,7 +44,12 @@ from deeptransient.metrics import (
     mean_attribute_error,
     normalised_accuracy,
 )
-from deeptransient.models import CloudyNet, TransientNet, TRANSIENT_ATTRIBUTES
+from deeptransient.models import (
+    CloudyNet,
+    TransientNet,
+    TRANSIENT_ATTRIBUTES,
+    get_transform,
+)
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -87,8 +92,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--image-dir",
         type=str,
-        default="imageLD",
-        help="Image sub-directory (transient_attrs only).",
+        default="imageAlignedLD",
+        help=(
+            "Image sub-directory (transient_attrs only). Loader auto-falls "
+            "back to imageLD if imageAlignedLD is absent."
+        ),
     )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=4)
@@ -209,17 +217,20 @@ def main() -> None:
     # Evaluate
     # ------------------------------------------------------------------
     if task == "transient_attrs":
+        if args.hub_repo:
+            model, cfg = load_model_from_hub(args.hub_repo)
+        else:
+            model, cfg = load_model_from_checkpoint(ckpt_list[0])
+
+        # Use the backbone-specific transform (CLIP needs different
+        # normalization than ImageNet-pretrained networks).
         val_ds = TransientAttributesDataset(
-            args.data_root, split="test", image_dir=args.image_dir
+            args.data_root, split="test", image_dir=args.image_dir,
+            transform=get_transform(cfg["backbone"], split="val"),
         )
         val_loader = DataLoader(
             val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.workers
         )
-
-        if args.hub_repo:
-            model, _ = load_model_from_hub(args.hub_repo)
-        else:
-            model, _ = load_model_from_checkpoint(ckpt_list[0])
 
         model = model.to(device)
         results = eval_transient(model, val_loader, device, args.per_attribute)
@@ -240,9 +251,12 @@ def main() -> None:
     else:  # two_class_weather
         if args.hub_repo:
             # Single model evaluation
-            model, _ = load_model_from_hub(args.hub_repo)
+            model, cfg = load_model_from_hub(args.hub_repo)
             model = model.to(device)
-            val_ds = TwoClassWeatherDataset(args.data_root, split="test", fold=0)
+            val_ds = TwoClassWeatherDataset(
+                args.data_root, split="test", fold=0,
+                transform=get_transform(cfg["backbone"], split="val"),
+            )
             val_loader = DataLoader(
                 val_ds,
                 batch_size=args.batch_size,
@@ -258,10 +272,11 @@ def main() -> None:
             folds = ckpt_list if len(ckpt_list) > 1 else ckpt_list * 5
             fold_accs = []
             for fold_idx, ckpt in enumerate(folds[:5]):
-                model, _ = load_model_from_checkpoint(ckpt)
+                model, cfg = load_model_from_checkpoint(ckpt)
                 model = model.to(device)
                 val_ds = TwoClassWeatherDataset(
-                    args.data_root, split="test", fold=fold_idx
+                    args.data_root, split="test", fold=fold_idx,
+                    transform=get_transform(cfg["backbone"], split="val"),
                 )
                 val_loader = DataLoader(
                     val_ds,

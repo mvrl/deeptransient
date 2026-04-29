@@ -7,7 +7,7 @@ pretrained: imagenet
 dropout: 0.5
 
 # Data
-image_dir: imageLD
+image_dir: imageAlignedLD
 
 # Optimisation
 epochs: 30

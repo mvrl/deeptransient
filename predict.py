@@ -32,20 +32,12 @@ from typing import Optional
 
 import torch
 from PIL import Image
-from torchvision import transforms
 
-from deeptransient.models import CloudyNet, TransientNet, TRANSIENT_ATTRIBUTES
-
-_TRANSFORM = transforms.Compose(
-    [
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225],
-        ),
-    ]
+from deeptransient.models import (
+    CloudyNet,
+    TransientNet,
+    TRANSIENT_ATTRIBUTES,
+    get_transform,
 )
 
 
@@ -109,11 +101,13 @@ def load_model(checkpoint: Optional[str], hub_repo: Optional[str]):
 
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
-    return model, task
+    transform = get_transform(config["backbone"], split="val")
+    return model, task, transform
 
 
 def predict_transient(
     model: torch.nn.Module,
+    transform,
     image_paths: list[str],
     top_k: int,
 ) -> list[dict]:
@@ -121,7 +115,7 @@ def predict_transient(
     with torch.no_grad():
         for path in image_paths:
             image = Image.open(path).convert("RGB")
-            tensor = _TRANSFORM(image).unsqueeze(0)
+            tensor = transform(image).unsqueeze(0)
             scores = model(tensor).squeeze(0)
 
             attrs = {
@@ -142,13 +136,14 @@ def predict_transient(
 
 def predict_cloudy(
     model: torch.nn.Module,
+    transform,
     image_paths: list[str],
 ) -> list[dict]:
     results = []
     with torch.no_grad():
         for path in image_paths:
             image = Image.open(path).convert("RGB")
-            tensor = _TRANSFORM(image).unsqueeze(0)
+            tensor = transform(image).unsqueeze(0)
             logits = model(tensor).squeeze(0)
             probs = torch.softmax(logits, dim=0)
             pred_idx = int(probs.argmax())
@@ -168,10 +163,10 @@ def predict_cloudy(
 def main() -> None:
     args = parse_args()
 
-    model, task = load_model(args.checkpoint, args.hub_repo)
+    model, task, transform = load_model(args.checkpoint, args.hub_repo)
 
     if task == "transient_attrs":
-        results = predict_transient(model, args.image, args.top_k)
+        results = predict_transient(model, transform, args.image, args.top_k)
         for r in results:
             print(f"\nImage: {r['image']}")
             print(f"Top {args.top_k} attributes:")
@@ -179,7 +174,7 @@ def main() -> None:
                 bar = "█" * int(score * 20)
                 print(f"  {attr:20s} {score:.3f}  {bar}")
     else:
-        results = predict_cloudy(model, args.image)
+        results = predict_cloudy(model, transform, args.image)
         for r in results:
             print(f"\nImage: {r['image']}")
             print(f"  Prediction: {r['prediction']}")

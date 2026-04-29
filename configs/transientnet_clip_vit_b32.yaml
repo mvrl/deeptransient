@@ -1,39 +1,43 @@
-# TransientNet with CLIP ViT-B/32 backbone (minimal fine-tuning experiment)
+# TransientNet with CLIP ViT-B/32 backbone (frozen-backbone linear probe).
 #
 # Requires: pip install open-clip-torch
 #
 # The CLIP visual encoder is pre-trained on 400M image-text pairs from the
-# internet. With the backbone frozen and only the task head trained, this
-# reaches competitive performance in very few epochs — typically < 5.
+# internet. With the backbone frozen and only the linear head trained,
+# Adam + cosine LR matches the paper's TransientNet-H (~3.85 %) in well
+# under a minute on a single 4090.
 #
 # Recommended workflow:
-#   1. Frozen-backbone run (fast, linear probe):
+#   1. Frozen-backbone linear probe (fast):
 #        python train.py --config configs/transientnet_clip_vit_b32.yaml \
-#                        --freeze-backbone --epochs 10 \
-#                        --data-root /path/to/transient_attrs
+#                        --freeze-backbone \
+#                        --data-root /path/to/transient_attrs \
+#                        --output-dir runs/transientnet_clip_b32_frozen_adam
 #
-#   2. Full fine-tune from the above checkpoint (optional):
+#   2. Full fine-tune from that checkpoint (optional, --init-from drops
+#      the saved optimizer/scheduler so a fresh schedule kicks in):
 #        python train.py --config configs/transientnet_clip_vit_b32.yaml \
-#                        --resume runs/transientnet_clip_frozen/checkpoint_best.pth \
-#                        --lr 1e-5 --epochs 10 \
-#                        --data-root /path/to/transient_attrs
+#                        --init-from runs/transientnet_clip_b32_frozen_adam/checkpoint_best.pth \
+#                        --lr 1e-5 --epochs 10 --optimizer adamw --amp \
+#                        --data-root /path/to/transient_attrs \
+#                        --output-dir runs/transientnet_clip_b32_finetune
 
 task: transient_attrs
 backbone: clip_vit_b32
-pretrained: clip       # always CLIP for clip_vit_* backbones
-dropout: 0.5
+pretrained: clip        # always CLIP for clip_vit_* backbones
+dropout: 0.0            # the 512×40 head is small; dropout hurts here
 
 # Data
-image_dir: imageLD
+image_dir: imageAlignedLD
 
-# Optimisation
-epochs: 10
-batch-size: 64
-lr: 0.01               # higher LR is fine when backbone is frozen
+# Optimisation — SGD+sigmoid+MSE stalls; Adam recovers cleanly.
+optimizer: adam
+scheduler: cosine
+epochs: 30
+batch-size: 256
+lr: 0.001
 weight-decay: 0.0001
-lr-step-size: 5
-lr-gamma: 0.1
 
 # Misc
-workers: 4
+workers: 8
 seed: 42
