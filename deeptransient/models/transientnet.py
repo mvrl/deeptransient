@@ -10,7 +10,9 @@ Supported backbones
 - ``resnet18``       – lightweight ResNet variant
 - ``resnet50``       – ResNet-50 (recommended modern baseline)
 - ``efficientnet_b0`` – EfficientNet-B0
-- ``vit_b_16``       – Vision Transformer ViT-B/16
+- ``vit_b_16``       – Vision Transformer ViT-B/16 (ImageNet-21k)
+- ``clip_vit_b32``   – CLIP ViT-B/32 visual encoder (OpenAI, 512-d)
+- ``clip_vit_l14``   – CLIP ViT-L/14 visual encoder (OpenAI, 768-d)
 
 Supported weight initialisations
 ---------------------------------
@@ -19,17 +21,24 @@ Supported weight initialisations
                    from http://places2.csail.mit.edu/models_places365/ and
                    cached in ``~/.cache/deeptransient/``
 - ``random``     – random (Xavier) initialisation
+- ``clip``       – CLIP pretrained (only valid for ``clip_vit_*`` backbones;
+                   set automatically when a ``clip_vit_*`` backbone is chosen)
+
+CLIP backbones require ``open-clip-torch``::
+
+    pip install open-clip-torch
 """
 
 from __future__ import annotations
 
 import urllib.request
+import warnings
 from pathlib import Path
 from typing import Optional
 
 import torch
 import torch.nn as nn
-from torchvision import models
+from torchvision import models, transforms
 from torchvision.models import (
     AlexNet_Weights,
     EfficientNet_B0_Weights,
@@ -96,10 +105,12 @@ BACKBONES: tuple[str, ...] = (
     "resnet50",
     "efficientnet_b0",
     "vit_b_16",
+    "clip_vit_b32",
+    "clip_vit_l14",
 )
 
 #: Names accepted by the ``pretrained`` argument.
-PRETRAINS: tuple[str, ...] = ("imagenet", "places365", "random")
+PRETRAINS: tuple[str, ...] = ("imagenet", "places365", "random", "clip")
 
 # URLs for Places365 pretrained weights (CSAILVision/places365)
 _PLACES365_URLS: dict[str, str] = {
@@ -114,7 +125,63 @@ _PLACES365_URLS: dict[str, str] = {
     ),
 }
 
+# open_clip model name → (arch_string, feature_dim)
+_CLIP_MODELS: dict[str, tuple[str, int]] = {
+    "clip_vit_b32": ("ViT-B-32", 512),
+    "clip_vit_l14": ("ViT-L-14", 768),
+}
+
+# CLIP image normalisation constants (differ from ImageNet)
+_CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+_CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+
+_IMAGENET_MEAN = (0.485, 0.456, 0.406)
+_IMAGENET_STD = (0.229, 0.224, 0.225)
+
 _CACHE_DIR = Path.home() / ".cache" / "deeptransient"
+
+
+# ---------------------------------------------------------------------------
+# Transform helpers
+# ---------------------------------------------------------------------------
+
+
+def get_transform(backbone: str, split: str = "train") -> transforms.Compose:
+    """Return the correct image pre-processing pipeline for *backbone*.
+
+    CLIP backbones require a different normalisation than ImageNet-pretrained
+    networks; this function provides the correct transform for each.
+
+    Args:
+        backbone: Backbone name.  One of :data:`BACKBONES`.
+        split: ``"train"`` (random crop + flip) or ``"test"``/``"val"``
+               (deterministic centre crop).
+
+    Returns:
+        A :class:`torchvision.transforms.Compose` pipeline.
+    """
+    is_clip = backbone in _CLIP_MODELS
+    mean = _CLIP_MEAN if is_clip else _IMAGENET_MEAN
+    std = _CLIP_STD if is_clip else _IMAGENET_STD
+
+    if split == "train":
+        return transforms.Compose(
+            [
+                transforms.Resize(256),
+                transforms.RandomCrop(224),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(mean, std),
+            ]
+        )
+    return transforms.Compose(
+        [
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std),
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +194,10 @@ def build_backbone(name: str, pretrained: str = "imagenet") -> tuple[nn.Module, 
 
     The classification head of the pretrained network is removed so that
     the returned module outputs a flat feature vector of size ``feature_dim``.
+
+    For CLIP backbones (``clip_vit_b32``, ``clip_vit_l14``) the *pretrained*
+    argument is ignored – the CLIP weights are always used.  Pass
+    ``pretrained="clip"`` to make this explicit.
 
     Args:
         name: Backbone architecture.  One of :data:`BACKBONES`.
@@ -144,8 +215,15 @@ def build_backbone(name: str, pretrained: str = "imagenet") -> tuple[nn.Module, 
             f"Unknown pretrained init {pretrained!r}. Choose from {PRETRAINS}."
         )
 
-    # For places365 we construct the net without ImageNet weights and load
-    # Places365 weights afterwards.
+    # ------------------------------------------------------------------
+    # CLIP backbones
+    # ------------------------------------------------------------------
+    if name in _CLIP_MODELS:
+        return _build_clip_backbone(name)
+
+    # ------------------------------------------------------------------
+    # Standard torchvision backbones
+    # ------------------------------------------------------------------
     imagenet_weights: dict[str, Optional[object]] = {
         "alexnet": AlexNet_Weights.DEFAULT,
         "resnet18": ResNet18_Weights.DEFAULT,
@@ -181,6 +259,48 @@ def build_backbone(name: str, pretrained: str = "imagenet") -> tuple[nn.Module, 
         net = _load_places365_weights(net, name)
 
     return net, feat_dim
+
+
+def _build_clip_backbone(name: str) -> tuple[nn.Module, int]:
+    """Construct and return a CLIP visual encoder.
+
+    Requires ``open-clip-torch`` (``pip install open-clip-torch``).
+
+    The visual encoder is used with its projection head intact so that it
+    outputs compact CLIP embeddings (512-d for ViT-B/32, 768-d for ViT-L/14).
+    These representations are well-aligned with semantic concepts and work
+    very well as frozen features for a lightweight linear head.
+
+    Args:
+        name: One of ``"clip_vit_b32"`` or ``"clip_vit_l14"``.
+
+    Returns:
+        ``(visual_encoder, feature_dim)`` where the visual encoder accepts
+        ``(B, 3, 224, 224)`` tensors pre-processed with :data:`_CLIP_MEAN`
+        / :data:`_CLIP_STD` normalisation.
+    """
+    try:
+        import open_clip
+    except ImportError as exc:
+        raise ImportError(
+            "open-clip-torch is required for CLIP backbones:\n"
+            "    pip install open-clip-torch"
+        ) from exc
+
+    arch, feat_dim = _CLIP_MODELS[name]
+    with warnings.catch_warnings():
+        # Suppress the benign QuickGELU activation-mismatch warning that
+        # open_clip emits when loading OpenAI weights into a default config.
+        warnings.filterwarnings("ignore", message="QuickGELU mismatch")
+        clip_model, _, _ = open_clip.create_model_and_transforms(
+            arch, pretrained="openai"
+        )
+
+    # Use the visual encoder with its projection head intact. This outputs
+    # compact CLIP embeddings of size feat_dim that are already semantically
+    # rich and well-suited to a downstream linear probe or fine-tuning.
+    visual = clip_model.visual
+    return visual, feat_dim
 
 
 def _load_places365_weights(net: nn.Module, backbone: str) -> nn.Module:
@@ -235,12 +355,18 @@ class TransientNet(nn.Module):
     Args:
         backbone: CNN backbone.  One of :data:`BACKBONES`.
         pretrained: Weight initialisation.  One of :data:`PRETRAINS`.
+            For ``clip_vit_*`` backbones this is ignored (CLIP weights
+            are always used).
         dropout: Dropout probability applied before the prediction head.
 
     Example::
 
         model = TransientNet(backbone="resnet50", pretrained="imagenet")
         scores = model(image_batch)  # (B, 40), values in [0, 1]
+
+        # CLIP variant – requires open-clip-torch
+        model = TransientNet(backbone="clip_vit_b32")
+        scores = model(clip_preprocessed_batch)
     """
 
     def __init__(
@@ -251,7 +377,8 @@ class TransientNet(nn.Module):
     ) -> None:
         super().__init__()
         self.backbone_name = backbone
-        self.pretrained = pretrained
+        # CLIP backbones always use CLIP pretraining
+        self.pretrained = "clip" if backbone in _CLIP_MODELS else pretrained
 
         self.backbone, feat_dim = build_backbone(backbone, pretrained)
         self.head = nn.Sequential(
@@ -264,7 +391,9 @@ class TransientNet(nn.Module):
         """Forward pass.
 
         Args:
-            x: Image tensor of shape ``(B, 3, H, W)``.
+            x: Image tensor of shape ``(B, 3, H, W)``.  For CLIP backbones
+               apply :func:`get_transform` with ``backbone="clip_vit_b32"``
+               (or ``"clip_vit_l14"``) for correct normalisation.
 
         Returns:
             Attribute scores of shape ``(B, 40)`` with values in ``[0, 1]``.
@@ -306,6 +435,8 @@ class CloudyNet(nn.Module):
     Args:
         backbone: CNN backbone.  One of :data:`BACKBONES`.
         pretrained: Weight initialisation.  One of :data:`PRETRAINS`.
+            For ``clip_vit_*`` backbones this is ignored (CLIP weights
+            are always used).
         dropout: Dropout probability applied before the classification head.
 
     Example::
@@ -313,6 +444,10 @@ class CloudyNet(nn.Module):
         model = CloudyNet(backbone="resnet50", pretrained="imagenet")
         logits = model(image_batch)  # (B, 2)
         pred = logits.argmax(dim=1)  # 0 = sunny, 1 = cloudy
+
+        # CLIP variant – requires open-clip-torch
+        model = CloudyNet(backbone="clip_vit_b32")
+        logits = model(clip_preprocessed_batch)
     """
 
     CLASSES: list[str] = ["sunny", "cloudy"]
@@ -325,7 +460,7 @@ class CloudyNet(nn.Module):
     ) -> None:
         super().__init__()
         self.backbone_name = backbone
-        self.pretrained = pretrained
+        self.pretrained = "clip" if backbone in _CLIP_MODELS else pretrained
 
         self.backbone, feat_dim = build_backbone(backbone, pretrained)
         self.head = nn.Sequential(

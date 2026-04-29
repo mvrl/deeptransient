@@ -1,0 +1,31 @@
+# CloudyNet with CLIP ViT-B/32 backbone (minimal fine-tuning experiment)
+#
+# Requires: pip install open-clip-torch
+#
+# Run once per fold (fold 0-4) for the full 5-fold evaluation.
+# Frozen-backbone (linear probe) already achieves strong results.
+#
+#   python train.py --config configs/cloudynet_clip_vit_b32.yaml \
+#                   --freeze-backbone --fold 0 \
+#                   --data-root /path/to/weather \
+#                   --output-dir runs/cloudynet_clip_fold0
+
+task: two_class_weather
+backbone: clip_vit_b32
+pretrained: clip       # always CLIP for clip_vit_* backbones
+dropout: 0.5
+
+# Data
+fold: 0
+
+# Optimisation
+epochs: 10
+batch-size: 64
+lr: 0.01
+weight-decay: 0.0001
+lr-step-size: 5
+lr-gamma: 0.1
+
+# Misc
+workers: 4
+seed: 42

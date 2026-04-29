@@ -29,6 +29,12 @@ Three pre-training initialisations match the paper's naming convention:
 | **-I** | ImageNet-1K (`--pretrained imagenet`) |
 | **-P** | Places365 (`--pretrained places365`) |
 | **-H** | Hybrid Places365+ImageNet (`--pretrained places365`, the hybrid checkpoint) |
+| **-C** | CLIP (`--backbone clip_vit_b32` or `clip_vit_l14`; `--pretrained clip`) |
+
+CLIP backbones use [OpenAI CLIP](https://github.com/openai/CLIP) weights loaded
+via [open_clip](https://github.com/mlfoundations/open_clip).  With the backbone
+frozen (`--freeze-backbone`) the CLIP linear-probe typically matches or exceeds
+the best paper results in fewer than 10 epochs.
 
 ### Benchmark results (from the paper)
 
@@ -60,6 +66,8 @@ cd deeptransient
 pip install -e .
 # Optional extras:
 pip install pyyaml huggingface_hub
+# CLIP backbones (clip_vit_b32, clip_vit_l14):
+pip install open-clip-torch
 ```
 
 **Requirements:** Python ≥ 3.9, PyTorch ≥ 2.0, torchvision ≥ 0.15.
@@ -151,8 +159,27 @@ python train.py \
     --amp
 ```
 
+**CLIP TransientNet** (frozen backbone linear probe, recommended starting point):
+```bash
+python train.py \
+    --config configs/transientnet_clip_vit_b32.yaml \
+    --data-root /path/to/transient_attrs \
+    --freeze-backbone \
+    --output-dir runs/transientnet_clip_frozen
+```
+
+Optional full fine-tune from the linear-probe checkpoint:
+```bash
+python train.py \
+    --config configs/transientnet_clip_vit_b32.yaml \
+    --data-root /path/to/transient_attrs \
+    --resume runs/transientnet_clip_frozen/checkpoint_best.pth \
+    --lr 1e-5 --epochs 10 \
+    --output-dir runs/transientnet_clip_finetune
+```
+
 Supported backbones: `alexnet`, `resnet18`, `resnet50`, `efficientnet_b0`,
-`vit_b_16`.
+`vit_b_16`, `clip_vit_b32`, `clip_vit_l14`.
 
 ---
 
@@ -252,7 +279,7 @@ python push_to_hub.py \
 ```
 deeptransient/           Python package
   models/
-    transientnet.py      TransientNet, CloudyNet, backbone factory
+    transientnet.py      TransientNet, CloudyNet, backbone factory, get_transform
   data/
     transient_attrs.py   Transient Attributes Dataset loader
     two_class_weather.py Two-Class Weather Dataset loader
@@ -264,8 +291,10 @@ push_to_hub.py           HuggingFace Hub upload
 configs/                 YAML configuration files
   transientnet_alexnet.yaml
   transientnet_resnet50.yaml
+  transientnet_clip_vit_b32.yaml
   cloudynet_alexnet.yaml
   cloudynet_resnet50.yaml
+  cloudynet_clip_vit_b32.yaml
 paper/                   Original WACV 2016 LaTeX source
 ```
 

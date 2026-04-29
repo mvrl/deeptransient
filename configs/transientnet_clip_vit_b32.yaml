@@ -1,0 +1,39 @@
+# TransientNet with CLIP ViT-B/32 backbone (minimal fine-tuning experiment)
+#
+# Requires: pip install open-clip-torch
+#
+# The CLIP visual encoder is pre-trained on 400M image-text pairs from the
+# internet. With the backbone frozen and only the task head trained, this
+# reaches competitive performance in very few epochs — typically < 5.
+#
+# Recommended workflow:
+#   1. Frozen-backbone run (fast, linear probe):
+#        python train.py --config configs/transientnet_clip_vit_b32.yaml \
+#                        --freeze-backbone --epochs 10 \
+#                        --data-root /path/to/transient_attrs
+#
+#   2. Full fine-tune from the above checkpoint (optional):
+#        python train.py --config configs/transientnet_clip_vit_b32.yaml \
+#                        --resume runs/transientnet_clip_frozen/checkpoint_best.pth \
+#                        --lr 1e-5 --epochs 10 \
+#                        --data-root /path/to/transient_attrs
+
+task: transient_attrs
+backbone: clip_vit_b32
+pretrained: clip       # always CLIP for clip_vit_* backbones
+dropout: 0.5
+
+# Data
+image_dir: imageLD
+
+# Optimisation
+epochs: 10
+batch-size: 64
+lr: 0.01               # higher LR is fine when backbone is frozen
+weight-decay: 0.0001
+lr-step-size: 5
+lr-gamma: 0.1
+
+# Misc
+workers: 4
+seed: 42

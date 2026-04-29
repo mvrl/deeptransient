@@ -6,6 +6,7 @@ from .transientnet import (
     CloudyNet,
     TransientNet,
     build_backbone,
+    get_transform,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "CloudyNet",
     "TransientNet",
     "build_backbone",
+    "get_transform",
 ]

@@ -51,7 +51,7 @@ from torch.utils.data import DataLoader
 
 from deeptransient.data import TransientAttributesDataset, TwoClassWeatherDataset
 from deeptransient.metrics import mean_attribute_error, normalised_accuracy
-from deeptransient.models import CloudyNet, TransientNet
+from deeptransient.models import CloudyNet, TransientNet, get_transform
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -81,12 +81,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--backbone",
-        choices=["alexnet", "resnet18", "resnet50", "efficientnet_b0", "vit_b_16"],
+        choices=["alexnet", "resnet18", "resnet50", "efficientnet_b0", "vit_b_16",
+                 "clip_vit_b32", "clip_vit_l14"],
         default="resnet50",
     )
     parser.add_argument(
         "--pretrained",
-        choices=["imagenet", "places365", "random"],
+        choices=["imagenet", "places365", "random", "clip"],
         default="imagenet",
     )
     parser.add_argument(
@@ -155,6 +156,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         metavar="USER/REPO",
         help="HuggingFace Hub repository id (required with --push-to-hub).",
+    )
+    parser.add_argument(
+        "--freeze-backbone",
+        action="store_true",
+        help=(
+            "Freeze all backbone parameters and only train the task head. "
+            "Highly recommended for CLIP backbones to replicate the minimal "
+            "fine-tuning experiment."
+        ),
     )
 
     args = parser.parse_args(argv)
@@ -332,19 +342,26 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Datasets & loaders
     # ------------------------------------------------------------------
+    train_transform = get_transform(args.backbone, split="train")
+    val_transform = get_transform(args.backbone, split="val")
+
     if args.task == "transient_attrs":
         train_ds = TransientAttributesDataset(
-            args.data_root, split="train", image_dir=args.image_dir
+            args.data_root, split="train", image_dir=args.image_dir,
+            transform=train_transform,
         )
         val_ds = TransientAttributesDataset(
-            args.data_root, split="test", image_dir=args.image_dir
+            args.data_root, split="test", image_dir=args.image_dir,
+            transform=val_transform,
         )
     else:
         train_ds = TwoClassWeatherDataset(
-            args.data_root, split="train", fold=args.fold
+            args.data_root, split="train", fold=args.fold,
+            transform=train_transform,
         )
         val_ds = TwoClassWeatherDataset(
-            args.data_root, split="test", fold=args.fold
+            args.data_root, split="test", fold=args.fold,
+            transform=val_transform,
         )
 
     train_loader = DataLoader(
@@ -390,10 +407,24 @@ def main() -> None:
     model = model.to(device)
 
     # ------------------------------------------------------------------
+    # Optionally freeze backbone (only train the task head)
+    # ------------------------------------------------------------------
+    if args.freeze_backbone:
+        for param in model.backbone.parameters():
+            param.requires_grad = False
+        n_frozen = sum(p.numel() for p in model.backbone.parameters())
+        n_trainable = sum(p.numel() for p in model.head.parameters())
+        print(
+            f"Backbone frozen ({n_frozen:,} params). "
+            f"Training head only ({n_trainable:,} params)."
+        )
+
+    # ------------------------------------------------------------------
     # Optimiser & scheduler
     # ------------------------------------------------------------------
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(
-        model.parameters(),
+        trainable_params,
         lr=args.lr,
         momentum=0.9,
         weight_decay=args.weight_decay,
