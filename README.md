@@ -200,7 +200,7 @@ Example output for TransientNet:
 ```
 Image: /path/to/image.jpg
 Top 10 attributes:
-  daylight             0.961  ████████████████████
+  day                  0.961  ████████████████████
   bright               0.894  █████████████████
   beautiful            0.812  ████████████████
   sunny                0.743  ██████████████

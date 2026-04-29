@@ -38,11 +38,6 @@ dev = ["pytest>=7", "pyyaml>=6.0"]
 Homepage = "https://github.com/mvrl/deeptransient"
 Paper = "https://arxiv.org/abs/1512.07569"
 
-[project.scripts]
-deeptransient-train = "train:main"
-deeptransient-evaluate = "evaluate:main"
-deeptransient-predict = "predict:main"
-
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["deeptransient*"]
