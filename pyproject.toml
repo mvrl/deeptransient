@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deeptransient"
+version = "1.0.0"
+description = "Fast transient scene attribute estimation with deep convolutional networks"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Ryan Baltenberger" },
+    { name = "Menghua Zhai" },
+    { name = "Connor Greenwell" },
+    { name = "Scott Workman" },
+    { name = "Nathan Jacobs" },
+]
+keywords = ["transient attributes", "scene understanding", "deep learning", "pytorch"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "Pillow>=9.0",
+    "numpy>=1.23",
+]
+
+[project.optional-dependencies]
+hub = ["huggingface_hub>=0.20"]
+yaml = ["pyyaml>=6.0"]
+dev = ["pytest>=7", "pyyaml>=6.0"]
+
+[project.urls]
+Homepage = "https://github.com/mvrl/deeptransient"
+Paper = "https://arxiv.org/abs/1512.07569"
+
+[project.scripts]
+deeptransient-train = "train:main"
+deeptransient-evaluate = "evaluate:main"
+deeptransient-predict = "predict:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["deeptransient*"]

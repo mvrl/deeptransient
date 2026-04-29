@@ -1,0 +1,22 @@
+# TransientNet with ResNet-50 backbone (modern baseline)
+# Stronger than the original AlexNet model out of the box.
+
+task: transient_attrs
+backbone: resnet50
+pretrained: imagenet
+dropout: 0.5
+
+# Data
+image_dir: imageLD
+
+# Optimisation
+epochs: 30
+batch-size: 64
+lr: 0.001
+weight-decay: 0.0001
+lr-step-size: 10
+lr-gamma: 0.1
+
+# Misc
+workers: 4
+seed: 42
