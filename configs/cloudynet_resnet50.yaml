@@ -1,0 +1,21 @@
+# CloudyNet with ResNet-50 backbone (modern baseline)
+
+task: two_class_weather
+backbone: resnet50
+pretrained: imagenet
+dropout: 0.5
+
+# Data
+fold: 0
+
+# Optimisation
+epochs: 20
+batch-size: 64
+lr: 0.001
+weight-decay: 0.0001
+lr-step-size: 7
+lr-gamma: 0.1
+
+# Misc
+workers: 4
+seed: 42

@@ -1,0 +1,13 @@
+torch>=2.0
+torchvision>=0.15
+Pillow>=9.0
+numpy>=1.23
+
+# Optional: CLIP backbones (clip_vit_b32, clip_vit_l14)
+# open-clip-torch>=2.20
+
+# Optional: HuggingFace Hub integration
+# huggingface_hub>=0.20
+
+# Optional: YAML config files
+# pyyaml>=6.0

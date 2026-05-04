@@ -14,6 +14,22 @@ src/caffemodels
 src/visualize/*/
 src/mean/
 paper/deeptransient/*.pdf
-*.csv
-*.txt
 *.mat
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Training outputs
+runs/
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store

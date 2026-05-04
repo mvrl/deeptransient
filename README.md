@@ -1,0 +1,452 @@
+# DeepTransient
+
+**A fast method for estimating transient scene attributes from a single image
+using deep convolutional neural networks.**
+
+> Ryan Baltenberger, Menghua Zhai, Connor Greenwell, Scott Workman, Nathan Jacobs  
+> *IEEE Winter Conference on Applications of Computer Vision (WACV), 2016*
+
+This repository contains a clean PyTorch reimplementation of the paper,
+supporting modern backbone architectures in addition to the original AlexNet.
+
+---
+
+## Overview
+
+Outdoor scenes experience a wide range of lighting and weather conditions which
+dramatically affect their appearance.  **DeepTransient** uses deep CNNs to
+estimate two types of scene attributes from a single image:
+
+| Model | Task | Output | Loss |
+|-------|------|--------|------|
+| **TransientNet** | Transient attribute estimation | 40-dim score vector ∈ [0,1] | MSE |
+| **CloudyNet** | Sunny / cloudy classification | 2-class logits | Cross-entropy |
+
+Three pre-training initialisations match the paper's naming convention:
+
+| Suffix | Initialisation |
+|--------|---------------|
+| **-I** | ImageNet-1K (`--pretrained imagenet`) |
+| **-P** | Places365 (`--pretrained places365`) |
+| **-H** | Hybrid Places365+ImageNet (`--pretrained places365`, the hybrid checkpoint) |
+| **-C** | CLIP (`--backbone clip_vit_b32` or `clip_vit_l14`; `--pretrained clip`) |
+
+CLIP backbones use [OpenAI CLIP](https://github.com/openai/CLIP) weights loaded
+via [open_clip](https://github.com/mlfoundations/open_clip).  With the backbone
+frozen (`--freeze-backbone`) the CLIP linear-probe typically matches or exceeds
+the best paper results in fewer than 10 epochs.
+
+### Reproduced benchmark results
+
+The numbers below were produced on a workstation with 2× RTX 4090s using
+this codebase, on the official 81/20 holdout split (transient attributes)
+and the 5-fold sunny/cloudy split (weather).  *Mean MSE × 100* matches the
+"Avg. Error" metric reported in the WACV 2016 paper.
+
+To regenerate this section after running new experiments::
+
+    python scripts/collect_results.py --write-readme
+
+<!-- RESULTS:START -->
+
+### Transient attribute prediction
+
+| Method | This repo (mean MSE × 100, ↓) | Paper |
+|--------|------------------------------:|------:|
+| Laffont et al. (2014) — paper | — | 4.2 |
+| TransientNet-I (AlexNet, ImageNet) — paper | — | 4.05 |
+| TransientNet-P (AlexNet, Places365) — paper | — | 3.87 |
+| TransientNet-H (AlexNet, Hybrid) — paper | — | 3.83 |
+|        |                                |       |
+| AlexNet-I  (ImageNet, SGD) | 4.38 | — |
+| AlexNet-P  (Places365, SGD) | 4.36 | — |
+| ResNet-18  (ImageNet, Adam) | 3.66 | — |
+| ResNet-50  (ImageNet, Adam) | 3.55 | — |
+| ResNet-50  (Places365, Adam) | 3.61 | — |
+| EfficientNet-B0 (ImageNet, Adam) | 3.63 | — |
+| ViT-B/16    (ImageNet-1K, AdamW) | 3.54 | — |
+| CLIP ViT-B/32  (frozen, linear probe, Adam) | 3.85 | — |
+| CLIP ViT-B/32  (full fine-tune from frozen) | 3.47 | — |
+| CLIP ViT-L/14  (frozen, linear probe, Adam) | 3.78 | — |
+|        |                                |       |
+| CLIP ViT-B/32  (zero-shot, no training) | 7.24 | — |
+| CLIP ViT-L/14  (zero-shot, no training) | 9.48 | — |
+
+### Two-class weather classification (5-fold normalised accuracy)
+
+| Method | This repo (norm. acc. % mean ± std, ↑) | Paper |
+|--------|--------------------------------------:|------:|
+| Lu et al. (2014) — paper | — | 53.1 ± 2.2 |
+| CloudyNet-I (AlexNet, ImageNet) — paper | — | 85.7 ± 0.5 |
+| CloudyNet-P (AlexNet, Places365) — paper | — | 86.1 ± 0.6 |
+| CloudyNet-H (AlexNet, Hybrid) — paper | — | 87.1 ± 0.3 |
+|        |                                |       |
+| AlexNet-I  (ImageNet, SGD) | 85.9 ± 0.8 | — |
+| AlexNet-P  (Places365, SGD) | 86.6 ± 0.9 | — |
+| ResNet-50  (ImageNet, Adam) | 90.9 ± 1.1 | — |
+| ResNet-50  (Places365, Adam) | 89.8 ± 1.3 | — |
+| CLIP ViT-B/32  (frozen, linear probe, Adam) | 84.0 ± 0.5 | — |
+|        |                                |       |
+| CLIP ViT-B/32  (zero-shot, no training) | 56.4 ± 0.9 | — |
+| CLIP ViT-L/14  (zero-shot, no training) | 42.3 ± 1.2 | — |
+
+<!-- RESULTS:END -->
+
+**Reading the table.**  Numbers come from a single training run per
+configuration on the official splits (81/20 webcam holdout for transient
+attributes, 5-fold sunny/cloudy for weather) — no ensembling, no
+test-time augmentation, no per-attribute hyper-tuning.
+
+*TransientNet*
+
+- **AlexNet (-I/-P) trails the paper by ~0.3 absolute.** The original
+  WACV models were trained in Caffe with a slightly different AlexNet
+  topology (grouped convolutions in conv2/4/5) and Caffe-style
+  preprocessing (BGR + per-channel mean subtraction). Torchvision's
+  modern AlexNet uses the same overall architecture but without the
+  original group convs, so a small reproduction gap is expected. The
+  paper's *relative* trend Hybrid > Places365 > ImageNet still holds.
+- **Modern backbones beat the paper's best (3.83) once we switch the
+  optimiser from SGD to Adam.** With sigmoid+MSE on a relatively
+  low-dimensional head (512–768), plain SGD spends most of its time
+  in the saturated regime; Adam (or AdamW) recovers cleanly. Plain
+  SGD remains the default in the training script to match the paper.
+- **CLIP ViT-B/32, frozen + linear probe with Adam, already matches
+  TransientNet-H** in well under a minute of head-only training on a
+  single 4090.
+- **CLIP ViT-B/32 with a 10-epoch full fine-tune from the linear-probe
+  checkpoint reaches 3.47 % — the new best on this benchmark.**
+
+*CloudyNet (5-fold)*
+
+- **AlexNet-I/-P reproduce the paper almost exactly** (85.9 vs 85.7
+  for ImageNet init, 86.6 vs 86.1 for Places365 init). The paper's
+  CloudyNet-H Hybrid checkpoint isn't redistributed in PyTorch form,
+  so we don't reproduce that row directly — but Places365 already
+  matches its 87.1 within noise.
+- **ResNet-50 with Adam clears 90 %** on both initialisations
+  (90.9 ± 1.1, 89.8 ± 1.3) — comfortably above the paper.
+- **CLIP ViT-B/32 frozen linear probe (84.0 ± 0.5)** is slightly
+  *below* the trained AlexNet baselines on this dataset, which is the
+  opposite of the transient-attributes story. Sunny vs cloudy at the
+  Lu et al. dataset's level of difficulty is a domain-specific
+  decision boundary that benefits from end-to-end training more than
+  CLIP's pre-trained features can offer.
+- **Zero-shot CLIP** (no training, just text prompts vs image
+  embeddings) gives 56 % normalised accuracy with B/32 and 42 % with
+  L/14 — both well below the trained models. Counter-intuitively L/14
+  is *worse* zero-shot, suggesting the pre-trained alignment between
+  the words "sunny"/"cloudy" and the kinds of images in Lu et al.'s
+  dataset is sharper but more brittle in the larger model. Zero-shot
+  is a reasonable lower bound but not a substitute for training here.
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/mvrl/deeptransient.git
+cd deeptransient
+pip install -e .
+# Optional extras:
+pip install pyyaml huggingface_hub
+# CLIP backbones (clip_vit_b32, clip_vit_l14):
+pip install open-clip-torch
+```
+
+**Requirements:** Python ≥ 3.9, PyTorch ≥ 2.0, torchvision ≥ 0.15.
+
+---
+
+## Datasets
+
+### Transient Attributes Dataset
+
+Download from the [official project page](https://transattr.cs.brown.edu/) and
+arrange as follows:
+
+```
+<data_root>/
+  imageAlignedLD/          # Brown's downsampled aligned distribution
+    00000064/
+      *.jpg
+    00000090/
+      ...
+  annotations/
+    annotations.tsv        # tab-separated: webcam/filename.jpg \t value,confidence ...
+    attributes.txt         # 40-attribute order
+  holdout_split/
+    training.txt           # one "webcam_id/filename" path per line (6904 lines)
+    test.txt               # (1667 lines)
+```
+
+The official holdout split uses **81 webcams for training** and **20 for testing**
+(8571 images total).  If the `holdout_split/` directory is absent the loader
+falls back to alphabetically partitioning the webcam directories on disk into
+the first 81 and the remaining 20.
+
+Direct download (the URLs Brown serves from `transattr.cs.brown.edu/files/`):
+
+```bash
+mkdir -p $DATA_ROOT && cd $DATA_ROOT
+curl -kL -O http://transattr.cs.brown.edu/files/aligned_images.tar      # 1.8 GB
+curl -kL -O http://transattr.cs.brown.edu/files/annotations.tar         # 3.5 MB
+curl -kL -O http://transattr.cs.brown.edu/files/training_test_splits.tar # 440 KB
+for t in *.tar; do tar -xf "$t"; done
+```
+
+(The Brown TLS certificate is currently expired, hence the `-k`.)
+
+### Two-Class Weather Dataset
+
+Download from [Lu et al.'s project page](https://cs.brown.edu/~lbsun/sun/two_class_weather.html):
+
+```
+<data_root>/
+  sunny/
+    *.jpg
+  cloudy/
+    *.jpg
+```
+
+The dataset contains ~5 000 sunny and ~5 000 cloudy images.
+
+---
+
+## Training
+
+### Using a config file
+
+```bash
+python train.py --config configs/transientnet_resnet50.yaml \
+                --data-root /path/to/transient_attrs \
+                --output-dir runs/transientnet_resnet50
+```
+
+### Using command-line flags
+
+**TransientNet-I** (AlexNet, ImageNet init):
+```bash
+python train.py \
+    --task transient_attrs \
+    --backbone alexnet \
+    --pretrained imagenet \
+    --data-root /path/to/transient_attrs \
+    --output-dir runs/transientnet_alexnet_imagenet
+```
+
+**CloudyNet-H** (AlexNet, Places365 init, fold 0 of 5):
+```bash
+python train.py \
+    --task two_class_weather \
+    --backbone alexnet \
+    --pretrained places365 \
+    --data-root /path/to/weather \
+    --fold 0 \
+    --output-dir runs/cloudynet_alexnet_places365_fold0
+```
+
+**Modern TransientNet** (ResNet-50, Adam — recommended for non-AlexNet
+backbones; SGD+sigmoid stalls):
+```bash
+python train.py \
+    --task transient_attrs \
+    --backbone resnet50 --pretrained imagenet \
+    --data-root /path/to/transient_attrs \
+    --optimizer adam --scheduler cosine \
+    --dropout 0.2 --epochs 20 --lr 3e-4 \
+    --output-dir runs/transientnet_resnet50_imagenet_adam
+```
+
+**CLIP TransientNet** (frozen backbone linear probe — fastest path to a
+paper-matching model, ~3 min on a single 4090):
+```bash
+python train.py \
+    --task transient_attrs --backbone clip_vit_b32 --pretrained clip \
+    --data-root /path/to/transient_attrs \
+    --freeze-backbone --dropout 0.0 \
+    --optimizer adam --scheduler cosine \
+    --batch-size 256 --lr 1e-3 --epochs 30 \
+    --output-dir runs/transientnet_clip_b32_frozen_adam
+```
+
+Full fine-tune from the linear-probe checkpoint (use `--init-from`, not
+`--resume`, so the optimizer/scheduler restart):
+```bash
+python train.py \
+    --task transient_attrs --backbone clip_vit_b32 --pretrained clip \
+    --data-root /path/to/transient_attrs \
+    --dropout 0.0 --epochs 10 --batch-size 64 \
+    --optimizer adamw --scheduler cosine --amp \
+    --lr 1e-5 --weight-decay 1e-4 \
+    --init-from runs/transientnet_clip_b32_frozen_adam/checkpoint_best.pth \
+    --output-dir runs/transientnet_clip_b32_finetune
+```
+
+**Sweep all backbones at once.** `scripts/run_all_transientnet.sh` runs the
+full set on the GPU you point it at. Open two shells (one per GPU) and:
+
+```bash
+bash scripts/run_all_transientnet.sh 0 a   # AlexNet-P, ResNet50-I/P (Adam)
+bash scripts/run_all_transientnet.sh 1 b   # ResNet18, EfficientNet-B0,
+                                           #   ViT-B/16, CLIP B/32 FT,
+                                           #   CLIP L/14 frozen
+python scripts/collect_results.py --write-readme
+```
+
+Supported backbones: `alexnet`, `resnet18`, `resnet50`, `efficientnet_b0`,
+`vit_b_16`, `clip_vit_b32`, `clip_vit_l14`.
+
+---
+
+## Evaluation
+
+**TransientNet** (single test split):
+```bash
+python evaluate.py \
+    --checkpoint runs/transientnet_resnet50/checkpoint_best.pth \
+    --data-root /path/to/transient_attrs \
+    --per-attribute
+```
+
+**CloudyNet** (5-fold, requires one checkpoint per fold):
+```bash
+python evaluate.py \
+    --task two_class_weather \
+    --checkpoints \
+        runs/cloudynet_fold0/checkpoint_best.pth \
+        runs/cloudynet_fold1/checkpoint_best.pth \
+        runs/cloudynet_fold2/checkpoint_best.pth \
+        runs/cloudynet_fold3/checkpoint_best.pth \
+        runs/cloudynet_fold4/checkpoint_best.pth \
+    --data-root /path/to/weather
+```
+
+---
+
+## Inference
+
+```bash
+python predict.py \
+    --checkpoint runs/transientnet_resnet50/checkpoint_best.pth \
+    --image /path/to/image.jpg
+```
+
+Or load directly from HuggingFace Hub:
+```bash
+python predict.py \
+    --hub-repo mvrl/deeptransient-transientnet-resnet50 \
+    --image /path/to/image.jpg
+```
+
+Example output for TransientNet:
+```
+Image: /path/to/image.jpg
+Top 10 attributes:
+  day                  0.961  ████████████████████
+  bright               0.894  █████████████████
+  beautiful            0.812  ████████████████
+  sunny                0.743  ██████████████
+  warm                 0.721  ██████████████
+  ...
+```
+
+Python API:
+```python
+import torch
+from PIL import Image
+from torchvision import transforms
+from deeptransient.models import TransientNet
+
+model = TransientNet(backbone="resnet50", pretrained="imagenet")
+# Load weights:
+ckpt = torch.load("checkpoint_best.pth", map_location="cpu", weights_only=False)
+model.load_state_dict(ckpt["model_state_dict"])
+model.eval()
+
+transform = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+])
+image = transform(Image.open("image.jpg").convert("RGB")).unsqueeze(0)
+with torch.no_grad():
+    scores = model(image)  # (1, 40), values in [0, 1]
+```
+
+---
+
+## Pushing to HuggingFace Hub
+
+After training, push your best checkpoint to the Hub:
+
+```bash
+huggingface-cli login
+python push_to_hub.py \
+    --checkpoint runs/transientnet_resnet50/checkpoint_best.pth \
+    --repo-id your-username/deeptransient-transientnet-resnet50
+```
+
+---
+
+## Repository structure
+
+```
+deeptransient/           Python package
+  models/
+    transientnet.py      TransientNet, CloudyNet, backbone factory, get_transform
+  data/
+    transient_attrs.py   Transient Attributes Dataset loader
+    two_class_weather.py Two-Class Weather Dataset loader
+  metrics.py             Evaluation metrics
+train.py                 Training script
+evaluate.py              Evaluation script
+predict.py               Single-image inference
+push_to_hub.py           HuggingFace Hub upload
+configs/                 YAML configuration files
+  transientnet_alexnet.yaml
+  transientnet_resnet50.yaml
+  transientnet_clip_vit_b32.yaml
+  cloudynet_alexnet.yaml
+  cloudynet_resnet50.yaml
+  cloudynet_clip_vit_b32.yaml
+paper/                   Original WACV 2016 LaTeX source
+```
+
+---
+
+## Citation
+
+If you use this code or the pre-trained models, please cite:
+
+```bibtex
+@inproceedings{baltenberger2016fast,
+  title     = {A Fast Method for Estimating Transient Scene Attributes},
+  author    = {Baltenberger, Ryan and Zhai, Menghua and Greenwell, Connor
+               and Workman, Scott and Jacobs, Nathan},
+  booktitle = {IEEE Winter Conference on Applications of Computer Vision (WACV)},
+  year      = {2016}
+}
+```
+
+The Transient Attributes Dataset should also be cited:
+
+```bibtex
+@article{laffont2014transient,
+  title   = {Transient Attributes for High-Level Understanding and Editing
+             of Outdoor Scenes},
+  author  = {Laffont, Pierre-Yves and Ren, Zhile and Tao, Xiaofeng
+             and Qian, Chao and Hays, James},
+  journal = {ACM Transactions on Graphics (SIGGRAPH)},
+  volume  = {33},
+  number  = {4},
+  year    = {2014}
+}
+```
+
+---
+
+## License
+
+MIT
